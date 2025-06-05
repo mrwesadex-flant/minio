@@ -70,7 +70,7 @@ func main() {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < *workers; i++ {
+	for i := range *workers {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
