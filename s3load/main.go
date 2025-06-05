@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	endpoint  = "http://storage-san-test-0:9000"
+	endpoint  = "http://localhost:9000"
 	accessKey = "minioadmin"
 	secretKey = "strong-minio-secret"
 	bucket    = "test-bucket"
@@ -58,7 +59,6 @@ Parameters:
 		log.Fatalf("Invalid small file range: start %d > end %d", smallStart, smallEnd)
 	}
 
-	// init logger
 	logFile, err := os.OpenFile("log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatalf("failed to open log file: %v", err)
@@ -66,7 +66,6 @@ Parameters:
 	defer logFile.Close()
 	log.SetOutput(logFile)
 
-	// compute large file range
 	largeStart = smallStart / 1000
 	largeEnd = smallEnd / 1000
 	if largeStart == 0 {
@@ -161,7 +160,7 @@ func workerLoop(client *s3.Client, id int, rng *rand.Rand, cycles int) {
 				if largeKey == "" {
 					return
 				}
-				start := rng.Intn(10*1024*1024*1024 - rangeSize)
+				start := rng.Intn(100*1024*1024 - rangeSize) // 100 MiB per file now
 				rangeHeader := fmt.Sprintf("bytes=%d-%d", start, start+rangeSize-1)
 				log.Printf("DEBUG: reading %s with range %s", largeKey, rangeHeader)
 
@@ -188,10 +187,16 @@ func readObject(ctx context.Context, client *s3.Client, key, rangeHeader string)
 	}
 
 	resp, err := client.GetObject(ctx, input)
+
 	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "NoSuchKey") {
+			log.Printf("Skipped missing object %s", key)
+			return 0, 0
+		}
 		log.Printf("Failed to read %s: %v", key, err)
 		return 0, 0
 	}
+
 	defer resp.Body.Close()
 
 	n, err := io.Copy(io.Discard, resp.Body)
@@ -216,5 +221,5 @@ func randomLargeFilename(rng *rand.Rand) string {
 		return ""
 	}
 	n := largeStart + rng.Intn(largeEnd-largeStart+1)
-	return fmt.Sprintf("large/largefile_%d.bin", n)
+	return fmt.Sprintf("large/largefile_%06d.bin", n)
 }
