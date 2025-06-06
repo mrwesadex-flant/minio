@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,16 +11,28 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/ratelimit"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	// "github.com/aws/aws-sdk-go-v2/aws/config"
+
+	"github.com/aws/aws-sdk-go-v2/credentials"
+)
+
+var (
+	readSmallRunning int64 = 0
+	readLargeRunning int64 = 0
 )
 
 const (
-	S3_ENDPOINT   = "http://storage-san-test-0:9000"
+	S3_ENDPOINT   = "http://172.17.1.70:9000"
 	S3_REGION     = "us-east-1"
 	S3_BUCKET     = "test-bucket"
 	S3_ACCESS_KEY = "minioadmin"
@@ -70,13 +83,30 @@ func main() {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
+	// // Create a Service Quotas client
+	// client := servicequotas.NewFromConfig(cfg)
+
+	// // Get S3 Quota (example - you'll need to find the correct QuotaCode)
+	// input := &servicequotas.GetServiceQuotaInput{
+	// 	QuotaCode:   aws.String("L-88118542-8E17-4C83-9634-761945DBA865"), // Replace with the correct QuotaCode
+	// 	ServiceCode: aws.String("s3"),
+	// }
+
+	// output, err := client.GetServiceQuota(context.TODO(), input)
+	// if err != nil {
+	// 	panic("failed to get service quota: " + err.Error())
+	// }
+
+	// // Print the quota value
+	// fmt.Printf("S3 Quota Value: %v\n", *output.Quota.Value)
+
 	s3client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true
 	})
 
 	var wg sync.WaitGroup
 	wg.Add(*workers)
-	for w := 0; w < *workers; w++ {
+	for w := range *workers {
 		go func(id int) {
 			defer wg.Done()
 			runWorker(&wg, id, s3client, *smallStart, *smallEnd, *cycles)
@@ -128,35 +158,65 @@ func smallFilenameWidth(n int) int {
 }
 
 func readSmallFile(client *s3.Client, wid, cycle int, key string) {
+	_ = atomic.AddInt64(&readSmallRunning, 1)
 	start := time.Now()
-	_, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(S3_BUCKET),
-		Key:    aws.String(key),
-	})
-	elapsed := time.Since(start)
-	if err != nil {
-		log.Printf("Failed to read %s: %v", key, err)
-	} else {
-		log.Printf("[W%d] Cycle %d: small %s in %s", wid, cycle, key, elapsed)
+	for {
+		_, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
+			Bucket: aws.String(S3_BUCKET),
+			Key:    aws.String(key),
+		})
+
+		elapsed := time.Since(start)
+		var err1 ratelimit.QuotaExceededError
+		var err2 *retry.MaxAttemptsError
+		if errors.As(err, &err1) || errors.As(err, &err2) {
+			log.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
+			continue
+		} else if err == nil {
+			break
+		} else {
+			log.Printf("Failed to read small %s: %v", key, err)
+			return
+		}
 	}
+	elapsed := time.Since(start)
+	val := atomic.AddInt64(&readSmallRunning, -1)
+	log.Printf("[W%d] Cycle %d: small %s in %s simultaneous %v", wid, cycle, key, elapsed, val)
 }
 
 func readLargeRange(client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
+	_ = atomic.AddInt64(&readLargeRunning, 1)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", startByte, endByte)
+	var out *s3.GetObjectOutput
+	var err error
 	start := time.Now()
-	out, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(S3_BUCKET),
-		Key:    aws.String(key),
-		Range:  aws.String(rangeHeader),
-	})
-	elapsed := time.Since(start)
-	if err != nil {
-		log.Printf("Failed to read %s: %v", key, err)
-		log.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (NaN MB/s)", wid, cycle, key, elapsed)
-		return
+	for {
+		out, err = client.GetObject(context.TODO(), &s3.GetObjectInput{
+			Bucket: aws.String(S3_BUCKET),
+			Key:    aws.String(key),
+			Range:  aws.String(rangeHeader),
+		})
+
+		elapsed := time.Since(start)
+		var err1 ratelimit.QuotaExceededError
+		var err2 *retry.MaxAttemptsError
+		if errors.As(err, &err1) || errors.As(err, &err2) {
+			log.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
+			continue
+		} else if err == nil {
+			break
+		} else {
+			log.Printf("Failed to read large %s: %v", key, err)
+			log.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s)", wid, cycle, key, elapsed)
+			return
+		}
 	}
+
+	elapsed := time.Since(start)
+
 	defer out.Body.Close()
 	readBytes, _ := io.Copy(io.Discard, out.Body)
 	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
-	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s)", wid, cycle, key, readBytes, elapsed, speed)
+	ret := atomic.AddInt64(&readLargeRunning, -1)
+	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s) simultaneous %v", wid, cycle, key, readBytes, elapsed, speed, ret)
 }

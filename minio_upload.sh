@@ -73,7 +73,7 @@ if [[ "$PREFIX" == "small" ]]; then
 
   for i in $(seq -w $START $END); do
     FILE="$PREFIX/file_${i}.txt"
-    head -c "$SIZE_BYTES" < /dev/urandom > "$FILE"
+y
   done
 
   # Check if remote prefix already exists
