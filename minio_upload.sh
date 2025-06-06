@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Configuration
-MC=~/development/minio/mc
+MC=~/minio/mc
 ALIAS="local"
 ENDPOINT="http://storage-san-test-0:9000"
 ACCESS_KEY="minioadmin"
@@ -66,14 +66,14 @@ if ! $MC ls $ALIAS/$BUCKET > /dev/null 2>&1; then
   $MC mb $ALIAS/$BUCKET
 fi
 
-if [[ "$PREFIX" == "small" ]]; then
+if [[ "$PREFIX" == "small1" ]]; then
   echo "Generating small files locally..."
 
   mkdir -p "$PREFIX"
 
   for i in $(seq -w $START $END); do
     FILE="$PREFIX/file_${i}.txt"
-y
+    head -c "$SIZE_BYTES" < /dev/urandom > "$FILE"
   done
 
   # Check if remote prefix already exists
@@ -91,10 +91,13 @@ y
   rm -rf "$TMP_DIR"
 
 else
-  echo "Streaming large files directly to S3..."
+  echo "Streaming $PREFIX files directly to S3..."
 
   for i in $(seq -w $START $END); do
     FILE_PATH="$ALIAS/$BUCKET/$PREFIX/largefile_${i}.bin"
+    if [[ $PREFIX == "small" ]]; then
+        FILE_PATH="$ALIAS/$BUCKET/$PREFIX/file_${i}.txt"
+    fi
     echo "Uploading: $FILE_PATH"
     head -c "$SIZE_BYTES" < /dev/zero | $MC pipe "$FILE_PATH"
   done
