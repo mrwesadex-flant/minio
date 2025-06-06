@@ -4,10 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,45 +18,49 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-var (
-	endpoint   = "http://localhost:9000"
-	region     = "us-east-1"
-	bucketName = "test-bucket"
+const (
+	S3_ENDPOINT   = "http://storage-san-test-0:9000"
+	S3_REGION     = "us-east-1"
+	S3_BUCKET     = "test-bucket"
+	S3_ACCESS_KEY = "minioadmin"
+	S3_SECRET_KEY = "minio-strong-secret"
 )
 
 func main() {
-	// Logging to file
-	logFile, err := os.OpenFile("log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Println("Failed to open log file:", err)
-		os.Exit(1)
-	}
-	defer logFile.Close()
-	log.SetOutput(logFile)
-
-	// Flags
 	workers := flag.Int("workers", 0, "Number of parallel workers")
-	smallStart := flag.Int("small-start", 0, "Start of small file index range")
-	smallEnd := flag.Int("small-end", 0, "End of small file index range")
-	cycles := flag.Int("cycles", 10, "Number of read cycles (default: 10)")
+	smallStart := flag.Int("small-start", 0, "Start of small file range")
+	smallEnd := flag.Int("small-end", 0, "End of small file range")
+	cycles := flag.Int("cycles", 10, "Number of cycles per worker")
 	flag.Parse()
 
 	if *workers <= 0 || *smallStart <= 0 || *smallEnd <= 0 {
-		fmt.Println("usage: -workers=N -small-start=FROM -small-end=TO [-cycles=N]")
+		fmt.Println("usage: -workers=N -small-start=N -small-end=N [-cycles=N]")
 		os.Exit(1)
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	logFile, err := os.OpenFile("log.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Printf("failed to open log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	log.SetOutput(multiWriter)
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	// Load AWS S3 config
+	randSeed := time.Now().UnixNano()
+	log.Printf("Rand seed: %v", randSeed)
+	rand.Seed(randSeed)
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("minioadmin", "minioadmin", "")),
+		config.WithRegion(S3_REGION),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(S3_ACCESS_KEY, S3_SECRET_KEY, "")),
+		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
 		config.WithEndpointResolverWithOptions(
-			aws.EndpointResolverWithOptionsFunc(func(service, region string, _ ...interface{}) (aws.Endpoint, error) {
+			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{
-					URL:               endpoint,
-					SigningRegion:     region,
+					URL:               S3_ENDPOINT,
+					SigningRegion:     S3_REGION,
 					HostnameImmutable: true,
 				}, nil
 			}),
@@ -65,79 +70,93 @@ func main() {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = true // Important for MinIO
+	s3client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
 	})
 
 	var wg sync.WaitGroup
-	for i := range *workers {
-		wg.Add(1)
-		go func(workerID int) {
+	wg.Add(*workers)
+	for w := 0; w < *workers; w++ {
+		go func(id int) {
 			defer wg.Done()
-			for c := 1; c <= *cycles; c++ {
-				// Small file
-				smallIdx := r.Intn(*smallEnd-*smallStart+1) + *smallStart
-				var smallKey string
-				if smallIdx < 5_000_000 {
-					smallKey = fmt.Sprintf("small/file_%07d.txt", smallIdx)
-				} else {
-					smallKey = fmt.Sprintf("small/file_%08d.txt", smallIdx)
-				}
-				start := time.Now()
-				_, err := readObject(context.TODO(), client, smallKey, nil)
-				dur := time.Since(start)
-				if err != nil {
-					log.Printf("Failed to read %s: %v", smallKey, err)
-				}
-				log.Printf("[W%d] Cycle %d: small %s in %s", workerID, c, smallKey, dur.Truncate(time.Millisecond))
-
-				// Large file with byte range
-				largeIdx := r.Intn(*smallEnd-*smallStart+1) + *smallStart
-				largeFileNum := largeIdx / 1000
-				rangeOffset := int64(r.Intn(100*1024*1024 - 1024*1024)) // up to ~100MB file
-				rangeBytes := int64(1024 * 1024)                        // read 1MB
-				rangeHeader := fmt.Sprintf("bytes=%d-%d", rangeOffset, rangeOffset+rangeBytes-1)
-				largeKey := fmt.Sprintf("large/largefile_%05d.bin", largeFileNum)
-				start = time.Now()
-				size, err := readObject(context.TODO(), client, largeKey, &rangeHeader)
-				dur = time.Since(start)
-				mbps := float64(*size) / dur.Seconds() / 1024 / 1024
-				if err != nil {
-					log.Printf("Failed to read %s: %v", largeKey, err)
-				}
-				log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s)", workerID, c, largeKey, *size, dur.Truncate(time.Millisecond), mbps)
-			}
-		}(i)
+			runWorker(&wg, id, s3client, *smallStart, *smallEnd, *cycles)
+		}(w)
 	}
 	wg.Wait()
 }
 
-func readObject(ctx context.Context, client *s3.Client, key string, byteRange *string) (*int64, error) {
-	input := &s3.GetObjectInput{
-		Bucket: aws.String(bucketName),
+func runWorker(wg *sync.WaitGroup, id int, client *s3.Client, smallStart, smallEnd, cycles int) {
+	largeMaxIndex := 50000
+	largeSize := 100 * 1024 * 1024
+	for c := 1; c <= cycles; c++ {
+		// Read 1 random small file
+		smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
+		smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
+		readSmallFile(client, id, c, smallFile)
+
+		// Read 1000 random small files in parallel
+		smallFiles := make([]string, 1000)
+		for i := range smallFiles {
+			idx := rand.Intn(smallEnd-smallStart+1) + smallStart
+			smallFiles[i] = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
+		}
+		wg.Add(len(smallFiles))
+		for _, f := range smallFiles {
+			go func(smallFile string) {
+				defer wg.Done()
+				readSmallFile(client, id, c, smallFile)
+
+				fileIdx := rand.Intn(largeMaxIndex) + 1
+				start := rand.Intn(largeSize - 1024*1024)
+				end := start + 1024*1024 - 1
+				file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
+				wg.Add(1)
+				go func(f string, s, e int) {
+					defer wg.Done()
+					readLargeRange(client, id, c, f, s, e)
+				}(file, start, end)
+			}(f)
+		}
+	}
+}
+
+func smallFilenameWidth(n int) int {
+	if n < 10000000 {
+		return 7
+	}
+	return 8
+}
+
+func readSmallFile(client *s3.Client, wid, cycle int, key string) {
+	start := time.Now()
+	_, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(S3_BUCKET),
 		Key:    aws.String(key),
-	}
-	if byteRange != nil {
-		input.Range = aws.String(*byteRange)
-	}
-
-	resp, err := client.GetObject(ctx, input)
+	})
+	elapsed := time.Since(start)
 	if err != nil {
-		if strings.Contains(err.Error(), "NoSuchKey") {
-			return aws.Int64(0), nil // skip missing file silently
-		}
-		return aws.Int64(0), err
+		log.Printf("Failed to read %s: %v", key, err)
+	} else {
+		log.Printf("[W%d] Cycle %d: small %s in %s", wid, cycle, key, elapsed)
 	}
-	defer resp.Body.Close()
+}
 
-	var n int64
-	buf := make([]byte, 32*1024)
-	for {
-		read, err := resp.Body.Read(buf)
-		n += int64(read)
-		if err != nil {
-			break
-		}
+func readLargeRange(client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", startByte, endByte)
+	start := time.Now()
+	out, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(S3_BUCKET),
+		Key:    aws.String(key),
+		Range:  aws.String(rangeHeader),
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		log.Printf("Failed to read %s: %v", key, err)
+		log.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (NaN MB/s)", wid, cycle, key, elapsed)
+		return
 	}
-	return aws.Int64(n), nil
+	defer out.Body.Close()
+	readBytes, _ := io.Copy(io.Discard, out.Body)
+	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
+	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s)", wid, cycle, key, readBytes, elapsed, speed)
 }
