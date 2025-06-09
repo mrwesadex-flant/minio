@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	endpoint        = "storage-san-test-3:9000"
+	endpoint        = "localhost:9000"
 	accessKeyID     = "minioadmin"
 	secretAccessKey = "minio-strong-secret"
 	useSSL          = false
