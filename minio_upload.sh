@@ -4,7 +4,7 @@ set -euo pipefail
 # Configuration
 MC=~/minio/mc
 ALIAS="local"
-ENDPOINT="http://storage-san-test-0:9000"
+ENDPOINT="http://storage-san-test-3:9000"
 ACCESS_KEY="minioadmin"
 SECRET_KEY="minio-strong-secret"
 BUCKET="test-bucket"

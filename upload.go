@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -24,9 +26,11 @@ const (
 	bucketName      = "test-bucket"
 	prefix          = "small/"
 	workers         = 100
+	progressStep    = 1000 // How often to update the percentage output
 )
 
 func parseSize(sizeStr string) (int64, error) {
+	sizeStr = strings.TrimSpace(sizeStr)
 	mult := int64(1)
 	unit := sizeStr[len(sizeStr)-1]
 	switch unit {
@@ -47,7 +51,7 @@ func parseSize(sizeStr string) (int64, error) {
 	return val * mult, nil
 }
 
-func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup, fileSize int64, logWriter io.Writer) {
+func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup, fileSize int64, logWriter io.Writer, counter *int64, total int, startTime time.Time, mu *sync.Mutex) {
 	defer wg.Done()
 
 	for i := range jobs {
@@ -56,7 +60,8 @@ func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup
 		// Check if file exists
 		_, err := minioClient.StatObject(context.Background(), bucketName, objectName, minio.StatObjectOptions{})
 		if err == nil {
-			fmt.Fprintf(logWriter, "[SKIP] %s already exists\n", objectName)
+			logLine := fmt.Sprintf("[SKIP] %s already exists\n", objectName)
+			fmt.Fprint(logWriter, logLine)
 			continue
 		}
 
@@ -79,6 +84,20 @@ func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup
 		} else {
 			fmt.Fprintf(logWriter, "[OK] uploaded %s (%d bytes)\n", objectName, fileSize)
 		}
+
+		// Update and print progress
+		mu.Lock()
+		*counter++
+		done := *counter
+		if done%progressStep == 0 || done == int64(total) {
+			elapsed := time.Since(startTime).Seconds()
+			rate := float64(done) / elapsed
+			remaining := float64(total) - float64(done)
+			eta := time.Duration(remaining/rate) * time.Second
+			percent := float64(done) / float64(total) * 100
+			fmt.Fprintf(logWriter, "[PROGRESS] %.2f%% (%d/%d), ETA: %s\n", percent, done, total, eta.Truncate(time.Second))
+		}
+		mu.Unlock()
 	}
 }
 
@@ -103,13 +122,12 @@ func main() {
 		log.Fatalf("Invalid size: %v", err)
 	}
 
-	// Setup logging to stdout + log file
+	// Logging
 	logFile, err := os.OpenFile(filepath.Join(".", "log.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatalf("Failed to open log.log: %v", err)
 	}
 	defer logFile.Close()
-
 	logWriter := io.MultiWriter(os.Stdout, logFile)
 
 	minioClient, err := minio.New(endpoint, &minio.Options{
@@ -132,12 +150,16 @@ func main() {
 		}
 	}
 
+	total := end - start
 	jobs := make(chan int, workers*10)
 	var wg sync.WaitGroup
+	var counter int64 = 0
+	var mu sync.Mutex
+	startTime := time.Now()
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go uploadWorker(minioClient, jobs, &wg, sizeBytes, logWriter)
+		go uploadWorker(minioClient, jobs, &wg, sizeBytes, logWriter, &counter, total, startTime, &mu)
 	}
 
 	for i := start; i < end; i++ {
