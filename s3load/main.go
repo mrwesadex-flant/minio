@@ -158,19 +158,27 @@ func smallFilenameWidth(n int) int {
 }
 
 func readSmallFile(client *s3.Client, wid, cycle int, key string) {
-	_ = atomic.AddInt64(&readSmallRunning, 1)
 	start := time.Now()
+	var simultaneous int64
+	toSleep := time.Duration.Milliseconds(500)
 	for {
+		simultaneous = atomic.AddInt64(&readSmallRunning, 1)
 		_, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
 			Key:    aws.String(key),
 		})
+		_ = atomic.AddInt64(&readSmallRunning, -1)
 
 		elapsed := time.Since(start)
-		var err1 ratelimit.QuotaExceededError
-		var err2 *retry.MaxAttemptsError
-		if errors.As(err, &err1) || errors.As(err, &err2) {
-			log.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
+		var errExceedQuota ratelimit.QuotaExceededError
+		var errMaxAttempts *retry.MaxAttemptsError
+		if errors.As(err, &errExceedQuota) {
+			log.Printf("Failed to read small %s: %v in %s, simultaneous %v. Retrying in %v", key, err, elapsed, simultaneous, toSleep)
+			time.Sleep(time.Duration(toSleep))
+			toSleep *= 2
+			continue
+		} else if errors.As(err, &errMaxAttempts) {
+			log.Printf("Failed to read small %s: %v in %s, simultaneous %v. Retrying", key, err, elapsed, simultaneous)
 			continue
 		} else if err == nil {
 			break
@@ -180,28 +188,34 @@ func readSmallFile(client *s3.Client, wid, cycle int, key string) {
 		}
 	}
 	elapsed := time.Since(start)
-	val := atomic.AddInt64(&readSmallRunning, -1)
-	log.Printf("[W%d] Cycle %d: small %s in %s simultaneous %v", wid, cycle, key, elapsed, val)
+	log.Printf("[W%d] Cycle %d: small %s in %s simultaneous %v", wid, cycle, key, elapsed, simultaneous)
 }
 
 func readLargeRange(client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
-	_ = atomic.AddInt64(&readLargeRunning, 1)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", startByte, endByte)
 	var out *s3.GetObjectOutput
 	var err error
 	start := time.Now()
+	toSleep := time.Duration.Milliseconds(500)
+	var simultaneous int64
 	for {
+		simultaneous = atomic.AddInt64(&readLargeRunning, 1)
 		out, err = client.GetObject(context.TODO(), &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
 			Key:    aws.String(key),
 			Range:  aws.String(rangeHeader),
 		})
+		_ = atomic.AddInt64(&readLargeRunning, -1)
 
 		elapsed := time.Since(start)
-		var err1 ratelimit.QuotaExceededError
-		var err2 *retry.MaxAttemptsError
-		if errors.As(err, &err1) || errors.As(err, &err2) {
-			log.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
+		var errRateLimit ratelimit.QuotaExceededError
+		var errMaxAttempts *retry.MaxAttemptsError
+		if errors.As(err, &errRateLimit) {
+			log.Printf("Failed to read large %s: %v in %s, simultaneous %v. Retrying in %v", key, err, elapsed, simultaneous, toSleep)
+			toSleep *= 2
+			continue
+		} else if errors.As(err, &errMaxAttempts) {
+			log.Printf("Failed to read large %s: %v in %s, simultaneous %v. Retrying in", key, err, elapsed, simultaneous)
 			continue
 		} else if err == nil {
 			break
@@ -217,6 +231,5 @@ func readLargeRange(client *s3.Client, wid, cycle int, key string, startByte, en
 	defer out.Body.Close()
 	readBytes, _ := io.Copy(io.Discard, out.Body)
 	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
-	ret := atomic.AddInt64(&readLargeRunning, -1)
-	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s) simultaneous %v", wid, cycle, key, readBytes, elapsed, speed, ret)
+	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s) simultaneous %v", wid, cycle, key, readBytes, elapsed, speed, simultaneous)
 }
