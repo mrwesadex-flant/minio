@@ -51,7 +51,7 @@ func parseSize(sizeStr string) (int64, error) {
 	return val * mult, nil
 }
 
-func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup, fileSize int64, logWriter io.Writer, counter *int64, total int, startTime time.Time, mu *sync.Mutex) {
+func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup, fileSize int64, logWriter io.Writer, counter *int64, total int, startTime time.Time, mu *sync.Mutex, force bool) {
 	defer wg.Done()
 
 	for i := range jobs {
@@ -60,9 +60,15 @@ func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup
 		// Check if file exists
 		_, err := minioClient.StatObject(context.Background(), bucketName, objectName, minio.StatObjectOptions{})
 		if err == nil {
-			logLine := fmt.Sprintf("[SKIP] %s already exists\n", objectName)
+			logLine := fmt.Sprintf("[WARNING] %s already exists", objectName)
 			fmt.Fprint(logWriter, logLine)
-			continue
+			if force {
+				fmt.Fprint(logWriter, "... overwriting\n")
+			} else {
+				fmt.Fprint(logWriter, "... skipping\n")
+				continue
+			}
+
 		}
 
 		content := make([]byte, fileSize)
@@ -102,8 +108,8 @@ func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup
 }
 
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Println("Usage: <program> <start> <end> <size> (e.g. 0 10000 1K)")
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: <program> <start> <end> <size> [--force] (e.g. 0 10000 1K)")
 		os.Exit(1)
 	}
 
@@ -120,6 +126,14 @@ func main() {
 	sizeBytes, err := parseSize(os.Args[3])
 	if err != nil || sizeBytes <= 0 {
 		log.Fatalf("Invalid size: %v", err)
+	}
+
+	var force bool
+	overwriteFlag := os.Args[4]
+	if overwriteFlag != "--force" && overwriteFlag != "" {
+		log.Fatalf("Invalid key. Must be --force: %v", overwriteFlag)
+	} else {
+		force = true
 	}
 
 	// Logging
@@ -159,7 +173,7 @@ func main() {
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go uploadWorker(minioClient, jobs, &wg, sizeBytes, logWriter, &counter, total, startTime, &mu)
+		go uploadWorker(minioClient, jobs, &wg, sizeBytes, logWriter, &counter, total, startTime, &mu, force)
 	}
 
 	for i := start; i < end; i++ {
