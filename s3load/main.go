@@ -32,10 +32,10 @@ var (
 	readSmallRunning int64 = 0
 	readLargeRunning int64 = 0
 	errorLogger      *log.Logger
+	S3_ENDPOINT      string = "http://10.210.0.67:9000"
 )
 
 const (
-	S3_ENDPOINT   = "http://10.210.0.70:9000"
 	S3_REGION     = "us-east-1"
 	S3_BUCKET     = "test-bucket"
 	S3_ACCESS_KEY = "minioadmin"
@@ -43,6 +43,7 @@ const (
 )
 
 func main() {
+	S3_ENDPOINT := flag.String("endpoint-url", S3_ENDPOINT, "S3 endpoint URL")
 	workers := flag.Int("workers", 10, "Number of parallel workers")
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
@@ -209,7 +210,7 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 			Key:    aws.String(key),
 		})
 
-		elapsed := time.Since(start)
+		//elapsed := time.Since(start)
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
