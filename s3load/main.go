@@ -10,8 +10,10 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -57,6 +59,24 @@ func main() {
 		os.Exit(1)
 	}
 	defer logFile.Close()
+
+	ctx := context.Background()
+	ctx, cancelFunc := context.WithCancel(ctx)
+	defer cancelFunc()
+
+	// Setup signal handling for Ctrl+C
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-signalChan:
+			fmt.Println("\nReceived shutdown signal. Cancelling context...")
+			cancelFunc() // Cancel the context when signal is received
+		case <-ctx.Done():
+			// Context cancelled by other means
+		}
+	}()
+
 	multiWriter := io.MultiWriter(os.Stdout, logFile)
 	log.SetOutput(multiWriter)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -65,7 +85,7 @@ func main() {
 	log.Printf("Rand seed: %v", randSeed)
 	rand.Seed(randSeed)
 
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
+	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(S3_REGION),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(S3_ACCESS_KEY, S3_SECRET_KEY, "")),
 		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
@@ -92,7 +112,7 @@ func main() {
 	// 	ServiceCode: aws.String("s3"),
 	// }
 
-	// output, err := client.GetServiceQuota(context.TODO(), input)
+	// output, err := client.GetServiceQuota(ctx, input)
 	// if err != nil {
 	// 	panic("failed to get service quota: " + err.Error())
 	// }
@@ -109,20 +129,21 @@ func main() {
 	for w := range *workers {
 		go func(id int) {
 			defer wg.Done()
-			runWorker(&wg, id, s3client, *smallStart, *smallEnd, *cycles)
+			runWorker(ctx, id, s3client, *smallStart, *smallEnd, *cycles)
 		}(w)
 	}
 	wg.Wait()
 }
 
-func runWorker(wg *sync.WaitGroup, id int, client *s3.Client, smallStart, smallEnd, cycles int) {
+func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, smallEnd, cycles int) {
 	largeMaxIndex := 50000
 	largeSize := 100 * 1024 * 1024
 	for c := 1; c <= cycles; c++ {
+		var wg sync.WaitGroup
 		// Read 1 random small file
 		smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
 		smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
-		readSmallFile(client, id, c, smallFile)
+		readSmallFile(ctx, client, id, c, smallFile)
 
 		// Read 1000 random small files in parallel
 		smallFiles := make([]string, 1000)
@@ -134,7 +155,7 @@ func runWorker(wg *sync.WaitGroup, id int, client *s3.Client, smallStart, smallE
 		for _, f := range smallFiles {
 			go func(smallFile string) {
 				defer wg.Done()
-				readSmallFile(client, id, c, smallFile)
+				readSmallFile(ctx, client, id, c, smallFile)
 
 				fileIdx := rand.Intn(largeMaxIndex) + 1
 				start := rand.Intn(largeSize - 1024*1024)
@@ -143,10 +164,11 @@ func runWorker(wg *sync.WaitGroup, id int, client *s3.Client, smallStart, smallE
 				wg.Add(1)
 				go func(f string, s, e int) {
 					defer wg.Done()
-					readLargeRange(client, id, c, f, s, e)
+					readLargeRange(ctx, client, id, c, f, s, e)
 				}(file, start, end)
 			}(f)
 		}
+		wg.Wait()
 	}
 }
 
@@ -157,11 +179,11 @@ func smallFilenameWidth(n int) int {
 	return 8
 }
 
-func readSmallFile(client *s3.Client, wid, cycle int, key string) {
+func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key string) {
 	_ = atomic.AddInt64(&readSmallRunning, 1)
 	start := time.Now()
 	for {
-		_, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
+		_, err := client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
 			Key:    aws.String(key),
 		})
@@ -184,14 +206,14 @@ func readSmallFile(client *s3.Client, wid, cycle int, key string) {
 	log.Printf("[W%d] Cycle %d: small %s in %s simultaneous %v", wid, cycle, key, elapsed, val)
 }
 
-func readLargeRange(client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
+func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
 	_ = atomic.AddInt64(&readLargeRunning, 1)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", startByte, endByte)
 	var out *s3.GetObjectOutput
 	var err error
 	start := time.Now()
 	for {
-		out, err = client.GetObject(context.TODO(), &s3.GetObjectInput{
+		out, err = client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
 			Key:    aws.String(key),
 			Range:  aws.String(rangeHeader),
