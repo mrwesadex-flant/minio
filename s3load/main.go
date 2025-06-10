@@ -31,6 +31,7 @@ import (
 var (
 	readSmallRunning int64 = 0
 	readLargeRunning int64 = 0
+	errorLogger      *log.Logger
 )
 
 const (
@@ -66,6 +67,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer logFile.Close()
+
+	errorLogger = log.New(logFile, "ERROR: ", log.LstdFlags|log.Lmicroseconds)
 
 	ctx := context.Background()
 	ctx, cancelFunc := context.WithCancel(ctx)
@@ -108,6 +111,8 @@ func main() {
 	)
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
+		errorLogger.Printf("Failed to load AWS config: %v", err)
+		os.Exit(1)
 	}
 
 	s3client := s3.NewFromConfig(cfg, func(o *s3.Options) {
@@ -187,12 +192,12 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
-			//log.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
+			errorLogger.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
 		} else {
-			log.Printf("Failed to read small %s: %v", key, err)
+			errorLogger.Printf("Failed to read small %s: %v", key, err)
 			return
 		}
 	}
@@ -218,13 +223,13 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
-			//log.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
+			errorLogger.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
 		} else {
-			log.Printf("Failed to read large %s: %v", key, err)
-			log.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s)", wid, cycle, key, elapsed)
+			errorLogger.Printf("Failed to read large %s: %v", key, err)
+			errorLogger.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s)", wid, cycle, key, elapsed)
 			return
 		}
 	}
