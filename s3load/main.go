@@ -209,7 +209,7 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 			Key:    aws.String(key),
 		})
 
-		//elapsed := time.Since(start)
+		elapsed := time.Since(start)
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
