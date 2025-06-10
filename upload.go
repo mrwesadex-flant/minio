@@ -109,7 +109,12 @@ func uploadWorker(minioClient *minio.Client, jobs <-chan int, wg *sync.WaitGroup
 
 func main() {
 	if len(os.Args) < 4 {
-		fmt.Println("Usage: <program> <start> <end> <size> [--force] (e.g. 0 10000 1K)")
+		fmt.Println(`Usage: <program> <start> <end> <size> [--force]
+Example: 0 10000 1K
+- <start>: Starting index of files to upload
+- <end>: Ending index of files to upload
+- <size>: Size of each file (e.g., 1K, 10M, 1G)
+- [--force]: Optional flag to overwrite existing files`)
 		os.Exit(1)
 	}
 
