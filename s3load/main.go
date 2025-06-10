@@ -46,6 +46,7 @@ func main() {
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
 	cycles := flag.Int("cycles", 0, "Number of cycles per worker")
+	fmt.Printf("Cycles: %d\n", *cycles)
 	flag.Parse()
 
 	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart <= *smallEnd {
