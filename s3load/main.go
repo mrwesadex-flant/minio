@@ -43,7 +43,7 @@ const (
 )
 
 func main() {
-	S3_ENDPOINT := flag.String("endpoint-url", S3_ENDPOINT, "S3 endpoint URL")
+	s3Endpoint := flag.String("endpoint-url", S3_ENDPOINT, "S3 endpoint URL")
 	workers := flag.Int("workers", 10, "Number of parallel workers")
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
@@ -104,7 +104,7 @@ func main() {
 		config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{
-					URL:               S3_ENDPOINT,
+					URL:               *s3Endpoint,
 					SigningRegion:     S3_REGION,
 					HostnameImmutable: true,
 				}, nil
