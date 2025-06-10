@@ -140,6 +140,14 @@ func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, small
 	}
 
 	for c := 1; c <= cycles; c++ {
+		select {
+		case <-ctx.Done():
+			log.Printf("[W%d] Context canceled. Exiting worker loop.", id)
+			return
+		default:
+			// Proceed with the current cycle
+		}
+
 		var wg sync.WaitGroup
 		// Read 1 random small file
 		smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
@@ -156,7 +164,13 @@ func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, small
 		for _, f := range smallFiles {
 			go func(smallFile string) {
 				defer wg.Done()
-				readSmallFile(ctx, client, id, c, smallFile)
+				select {
+				case <-ctx.Done():
+					log.Printf("[W%d] Context canceled. Exiting small file read.", id)
+					return
+				default:
+					readSmallFile(ctx, client, id, c, smallFile)
+				}
 
 				fileIdx := rand.Intn(largeMaxIndex) + 1
 				start := rand.Intn(largeSize - 1024*1024)
@@ -165,7 +179,13 @@ func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, small
 				wg.Add(1)
 				go func(f string, s, e int) {
 					defer wg.Done()
-					readLargeRange(ctx, client, id, c, f, s, e)
+					select {
+					case <-ctx.Done():
+						log.Printf("[W%d] Context canceled. Exiting large range read.", id)
+						return
+					default:
+						readLargeRange(ctx, client, id, c, f, s, e)
+					}
 				}(file, start, end)
 			}(f)
 		}
