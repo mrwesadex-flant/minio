@@ -49,7 +49,7 @@ func main() {
 	fmt.Printf("Cycles: %d\n", *cycles)
 	flag.Parse()
 
-	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart <= *smallEnd {
+	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart >= *smallEnd {
 		fmt.Println(`Parameter(s) error!
 		
 		usage: -workers=N -small-start=N -small-end=N [-cycles=N]
