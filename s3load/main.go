@@ -34,7 +34,7 @@ var (
 )
 
 const (
-	S3_ENDPOINT   = "http://172.17.1.70:9000"
+	S3_ENDPOINT   = "http://10.210.0.70:9000"
 	S3_REGION     = "us-east-1"
 	S3_BUCKET     = "test-bucket"
 	S3_ACCESS_KEY = "minioadmin"
@@ -45,11 +45,18 @@ func main() {
 	workers := flag.Int("workers", 0, "Number of parallel workers")
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
-	cycles := flag.Int("cycles", 10, "Number of cycles per worker")
+	cycles := flag.Int("cycles", 0, "Number of cycles per worker")
 	flag.Parse()
 
-	if *workers <= 0 || *smallStart <= 0 || *smallEnd <= 0 {
-		fmt.Println("usage: -workers=N -small-start=N -small-end=N [-cycles=N]")
+	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart <= *smallEnd {
+		fmt.Println(`Parameter(s) error!
+		
+		usage: -workers=N -small-start=N -small-end=N [-cycles=N]
+		Where:
+		- workers = amount of simultaneously running workers. Must be > 0.
+		- small-start = start of small file range (inclusive). Must be >= 0.
+		- small-end = end of small file range (inclusive). Must be > small-start and > 0.
+		- cycles = number of cycles per worker (default 0 - infinite)`)
 		os.Exit(1)
 	}
 
@@ -103,23 +110,6 @@ func main() {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// // Create a Service Quotas client
-	// client := servicequotas.NewFromConfig(cfg)
-
-	// // Get S3 Quota (example - you'll need to find the correct QuotaCode)
-	// input := &servicequotas.GetServiceQuotaInput{
-	// 	QuotaCode:   aws.String("L-88118542-8E17-4C83-9634-761945DBA865"), // Replace with the correct QuotaCode
-	// 	ServiceCode: aws.String("s3"),
-	// }
-
-	// output, err := client.GetServiceQuota(ctx, input)
-	// if err != nil {
-	// 	panic("failed to get service quota: " + err.Error())
-	// }
-
-	// // Print the quota value
-	// fmt.Printf("S3 Quota Value: %v\n", *output.Quota.Value)
-
 	s3client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true
 	})
@@ -138,6 +128,9 @@ func main() {
 func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, smallEnd, cycles int) {
 	largeMaxIndex := 50000
 	largeSize := 100 * 1024 * 1024
+	if cycles == 0 {
+		cycles = syscall.RLIM_INFINITY
+	}
 	for c := 1; c <= cycles; c++ {
 		var wg sync.WaitGroup
 		// Read 1 random small file
@@ -192,7 +185,7 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
-			log.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
+			//log.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
@@ -223,7 +216,7 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 		var err1 ratelimit.QuotaExceededError
 		var err2 *retry.MaxAttemptsError
 		if errors.As(err, &err1) || errors.As(err, &err2) {
-			log.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
+			//log.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
