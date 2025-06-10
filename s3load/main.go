@@ -129,8 +129,10 @@ func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, small
 	largeMaxIndex := 50000
 	largeSize := 100 * 1024 * 1024
 	if cycles == 0 {
-		cycles = syscall.RLIM_INFINITY
+		cycles = 9223372036854775807
+		// Set to a very large number to simulate infinite cycles
 	}
+
 	for c := 1; c <= cycles; c++ {
 		var wg sync.WaitGroup
 		// Read 1 random small file
