@@ -32,7 +32,7 @@ var (
 	readSmallRunning int64 = 0
 	readLargeRunning int64 = 0
 	errorLogger      *log.Logger
-	S3_ENDPOINT      string = "http://10.210.0.67:9000"
+	S3_ENDPOINT      string = "http://10.210.0.67:19000"
 
 	scriptStartTime time.Time
 	totalBytesRead  uint64 = 0
