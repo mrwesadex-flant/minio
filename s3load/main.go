@@ -33,6 +33,9 @@ var (
 	readLargeRunning int64 = 0
 	errorLogger      *log.Logger
 	S3_ENDPOINT      string = "http://10.210.0.67:9000"
+
+	scriptStartTime time.Time
+	totalBytesRead  uint64 = 0
 )
 
 const (
@@ -121,6 +124,7 @@ func main() {
 		o.UsePathStyle = true
 	})
 
+	scriptStartTime = time.Now()
 	var wg sync.WaitGroup
 	wg.Add(*workers)
 	for w := range *workers {
@@ -204,8 +208,10 @@ func smallFilenameWidth(n int) int {
 func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key string) {
 	_ = atomic.AddInt64(&readSmallRunning, 1)
 	start := time.Now()
+	var out *s3.GetObjectOutput
+	var err error
 	for {
-		_, err := client.GetObject(ctx, &s3.GetObjectInput{
+		out, err = client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
 			Key:    aws.String(key),
 		})
@@ -223,9 +229,28 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 			return
 		}
 	}
+	defer out.Body.Close()
+
+	readBytes, err := io.Copy(io.Discard, out.Body)
+	if err != nil {
+		errorLogger.Printf("Failed to read body of small %s: %v", key, err)
+	}
 	elapsed := time.Since(start)
+	elapsedScript := time.Since(scriptStartTime)
+	totalBytesRead := atomic.AddUint64(&totalBytesRead, uint64(readBytes))
+	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
+	totalSpeed := float64(totalBytesRead) / elapsedScript.Seconds() / 1024 / 1024
+
 	val := atomic.AddInt64(&readSmallRunning, -1)
-	log.Printf("[W%d] Cycle %d: small %s in %s simultaneous %v", wid, cycle, key, elapsed, val)
+	log.Printf(
+		"[W%d] Cycle %d: small %s in %s (this %.2f MB/s, total %.2f MB/s) simultaneous %v",
+		wid,
+		cycle,
+		key,
+		elapsed,
+		speed, totalSpeed,
+		val,
+	)
 }
 
 func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key string, startByte, endByte int) {
@@ -257,10 +282,28 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 	}
 
 	elapsed := time.Since(start)
+	elapsedScript := time.Since(scriptStartTime)
 
 	defer out.Body.Close()
-	readBytes, _ := io.Copy(io.Discard, out.Body)
+	readBytes, err := io.Copy(io.Discard, out.Body)
+	if err != nil {
+		errorLogger.Printf("Failed to read body of range %s: %v", key, err)
+	}
+
+	totalBytesRead := atomic.AddUint64(&totalBytesRead, uint64(readBytes))
+
 	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
-	ret := atomic.AddInt64(&readLargeRunning, -1)
-	log.Printf("[W%d] Cycle %d: range %s (%d bytes) in %s (%.2f MB/s) simultaneous %v", wid, cycle, key, readBytes, elapsed, speed, ret)
+	totalSpeed := float64(totalBytesRead) / elapsedScript.Seconds() / 1024 / 1024
+
+	simultaneous := atomic.AddInt64(&readLargeRunning, -1)
+	log.Printf(
+		"[W%d] Cycle %d: range %s (%d bytes) in %s (this %.2f MB/s, total %.2f MB/s) simultaneous %v",
+		wid,
+		cycle,
+		key,
+		readBytes,
+		elapsed,
+		speed, totalSpeed,
+		simultaneous,
+	)
 }
