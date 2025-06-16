@@ -186,7 +186,7 @@ func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, small
 
 				fileIdx := rand.Intn(largeMaxIndex) + 1
 				start := rand.Intn(largeSize - 1024*1024)
-				end := start + 1024*1024*20 - 1
+				end := start + 1024*1024*10 - 1
 				file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
 				wg.Add(1)
 				go func(f string, s, e int) {
