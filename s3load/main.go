@@ -106,8 +106,8 @@ func main() {
 		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
 		config.WithRetryer(func() aws.Retryer {
 			return retry.NewStandard(func(so *retry.StandardOptions) {
-				so.RateLimiter = nil
-				so.MaxAttempts = 10
+				//so.RateLimiter = nil
+				so.MaxAttempts = 50
 			})
 		}),
 		config.WithEndpointResolverWithOptions(
