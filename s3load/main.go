@@ -104,6 +104,12 @@ func main() {
 		config.WithRegion(S3_REGION),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(S3_ACCESS_KEY, S3_SECRET_KEY, "")),
 		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		config.WithRetryer(func() aws.Retryer {
+			return retry.NewStandard(func(so *retry.StandardOptions) {
+				so.RateLimiter = nil
+				so.MaxAttempts = 10
+			})
+		}),
 		config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{
@@ -114,6 +120,7 @@ func main() {
 			}),
 		),
 	)
+
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
 		errorLogger.Printf("Failed to load AWS config: %v", err)
