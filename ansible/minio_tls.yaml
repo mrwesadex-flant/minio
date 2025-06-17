@@ -27,6 +27,24 @@
         - public.crt
         - private.key
 
+    - name: Ensure remote nginx certs dir exists
+      when: tls == 'on'
+      ansible.builtin.file:
+        path: "//etc/nginx/ssl"
+        state: directory
+
+    - name: Upload cert to nginx on nodes
+      when: tls == 'on'
+      ansible.builtin.copy:
+        src: "{{ certs_local_dir }}/public.crt"
+        dest: "/etc/nginx/ssl/nginx.crt"
+
+    - name: Upload private key to nginx on nodes
+      when: tls == 'on'
+      ansible.builtin.copy:
+        src: "{{ certs_local_dir }}/private.key"
+        dest: "/etc/nginx/ssl/nginx.key"
+
     - name: Upload CA cert to nodes
       when: tls == 'on'
       ansible.builtin.copy:
@@ -35,7 +53,6 @@
         mode: '0666'
       loop:
         - ca.crt
-
 
     - name: Remove certs from nodes if TLS is OFF
       when: tls == 'off'
@@ -57,18 +74,22 @@
         regexp: 'https://'
         replace: 'http://'
 
-    - name: Restart minio service
+    - name: Restart minio and nginx services
       ansible.builtin.service:
-        name: minio
+        name: "{{ item }}"
         state: restarted
         enabled: true
+      loop:
+      - nginx
+      - minio
 
     - name: Ensure minio is running
       ansible.builtin.service_facts:
       register: svc
 
-    - name: Verify minio is active
+    - name: Verify minio and nginx is active
       ansible.builtin.assert:
         that:
           - svc.ansible_facts.services['minio.service'].state == "running"
-        fail_msg: "MinIO is not running on {{ inventory_hostname }}"
+          - svc.ansible_facts.services['nginx.service'].state == "running"
+        fail_msg: "MinIO or Nginx is not running on {{ inventory_hostname }}"
