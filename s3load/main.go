@@ -56,7 +56,8 @@ func main() {
 	workers := flag.Int("workers", 10, "Number of parallel workers")
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
-	cycles := flag.Int("cycles", 0, "Number of cycles per worker")
+	smallCount := flag.Int("small-count", 1000, "Number of small files to read simultaneously")
+	cycles := flag.Int("cycles", -1, "Number of cycles per worker")
 	blockSize := flag.Int("block-size-mb", 10, "Large file download block size")
 	flag.Parse()
 
@@ -65,10 +66,10 @@ func main() {
 		
 		usage: -workers=N -mode %s [ModeOptions] [-cycles=N]
 
-		Each worker in Mode does <cycles> times:
+		Each worker for <mode> does <cycles> times:
 		- ai: 
 		  - Read small/file<rand(small-start, small-end)>.txt
-		  - 1000 simultaneous:
+		  - <small-count> simultaneous:
 		  	- Read small/file<rand(small-start, small-end)>.txt
 			- Read block of <block-size-mb> size in random location of large/largefile_<rand(0, 50000)>.bin, assuming large file size 100Mb
 		- block:
@@ -147,23 +148,16 @@ func main() {
 		go func(worker int) {
 			defer wg.Done()
 
-			if *cycles == 0 {
-				*cycles = 9223372036854775807
-				// Set to a very large number to simulate infinite cycles
-			}
-
-			for cycle := 1; cycle <= *cycles; cycle++ {
+			for cycle := 1; *cycles < 0 || cycle <= *cycles; cycle++ {
 				select {
 				case <-ctx.Done():
-					log.Printf("[W%d] Context canceled. Exiting worker loop.", worker)
 					return
 				default:
-					// Proceed with the current cycle
 				}
 
 				switch *mode {
 				case MODE_AI:
-					runAIWorker(ctx, worker, cycle, s3client, *smallStart, *smallEnd, *blockSize)
+					runAIWorker(ctx, worker, cycle, s3client, *smallStart, *smallEnd, *smallCount, *blockSize)
 				case MODE_BS:
 					readRandomLargeFileBlock(ctx, worker, cycle, s3client, *blockSize)
 				}
@@ -173,44 +167,38 @@ func main() {
 	wg.Wait()
 }
 
-func runAIWorker(ctx context.Context, worker, cycle int, client *s3.Client, smallStart, smallEnd, blockSizeMiB int) {
-
+func runAIWorker(ctx context.Context, worker, cycle int, client *s3.Client, smallStart, smallEnd, smallCount, blockSizeMiB int) {
 	var wg sync.WaitGroup
 	// Read 1 random small file
 	smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
 	smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
 	readSmallFile(ctx, client, worker, cycle, smallFile)
 
-	// Read 1000 random small files in parallel
-	smallFiles := make([]string, 1000)
-	for i := range smallFiles {
+	// Read smallCount random small files in parallel
+	wg.Add(smallCount)
+	for _ = range smallCount {
 		idx := rand.Intn(smallEnd-smallStart+1) + smallStart
-		smallFiles[i] = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
-	}
-	wg.Add(len(smallFiles))
-	for _, f := range smallFiles {
+		smallFile = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
 		go func(smallFile string) {
 			defer wg.Done()
+
 			select {
 			case <-ctx.Done():
-				log.Printf("[W%d] Context canceled. Exiting small file read.", worker)
 				return
 			default:
-				readSmallFile(ctx, client, worker, cycle, smallFile)
 			}
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				select {
-				case <-ctx.Done():
-					log.Printf("[W%d] Context canceled. Exiting large range read.", worker)
-					return
-				default:
-					readRandomLargeFileBlock(ctx, worker, cycle, client, blockSizeMiB)
-				}
-			}()
-		}(f)
+			readSmallFile(ctx, client, worker, cycle, smallFile)
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			readRandomLargeFileBlock(ctx, worker, cycle, client, blockSizeMiB)
+
+		}(smallFile)
 	}
 	wg.Wait()
 
