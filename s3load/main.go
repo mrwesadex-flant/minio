@@ -43,25 +43,41 @@ const (
 	S3_BUCKET     = "test-bucket"
 	S3_ACCESS_KEY = "minioadmin"
 	S3_SECRET_KEY = "minio-strong-secret"
+
+	MODE_AI = "ai"
+	MODE_BS = "block"
 )
 
 func main() {
+	MODES := fmt.Sprintf("(%s|%s)", MODE_AI, MODE_BS)
+
+	mode := flag.String("mode", MODE_AI, fmt.Sprintf("Select mode (%s)", MODES))
 	s3Endpoint := flag.String("endpoint-url", S3_ENDPOINT, "S3 endpoint URL")
 	workers := flag.Int("workers", 10, "Number of parallel workers")
 	smallStart := flag.Int("small-start", 0, "Start of small file range")
 	smallEnd := flag.Int("small-end", 0, "End of small file range")
-	cycles := flag.Int("cycles", 0, "Number of cycles per worker")
+	smallCount := flag.Int("small-count", 1000, "Number of small files to read simultaneously")
+	cycles := flag.Int("cycles", -1, "Number of cycles per worker")
+	blockSize := flag.Int("block-size-mb", 10, "Large file download block size")
 	flag.Parse()
 
 	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart >= *smallEnd {
-		fmt.Println(`Parameter(s) error!
+		fmt.Printf(`Parameter(s) error!
 		
-		usage: -workers=N -small-start=N -small-end=N [-cycles=N]
-		Where:
+		usage: -workers=N -mode %s [ModeOptions] [-cycles=N]
+
+		Each worker for <mode> does <cycles> times:
+		- ai: 
+		  - Read small/file<rand(small-start, small-end)>.txt
+		  - <small-count> simultaneous:
+		  	- Read small/file<rand(small-start, small-end)>.txt
+			- Read block of <block-size-mb> size in random location of large/largefile_<rand(0, 50000)>.bin, assuming large file size 100Mb
+		- block:
+		  - Read block of <block-size-mb> size in random location of large/largefile_<rand(0, 50000)>.bin, assuming large file size 100Mb
+		
+		Common options:
 		- workers = amount of simultaneously running workers. Must be > 0.
-		- small-start = start of small file range (inclusive). Must be >= 0.
-		- small-end = end of small file range (inclusive). Must be > small-start and > 0.
-		- cycles = number of cycles per worker (default 0 - infinite)`)
+		- cycles = number of cycles per worker (default 0 - infinite)`, MODES)
 		os.Exit(1)
 	}
 
@@ -104,12 +120,6 @@ func main() {
 		config.WithRegion(S3_REGION),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(S3_ACCESS_KEY, S3_SECRET_KEY, "")),
 		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
-		config.WithRetryer(func() aws.Retryer {
-			return retry.NewStandard(func(so *retry.StandardOptions) {
-				//so.RateLimiter = nil
-				so.MaxAttempts = 50
-			})
-		}),
 		config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{
@@ -134,75 +144,74 @@ func main() {
 	scriptStartTime = time.Now()
 	var wg sync.WaitGroup
 	wg.Add(*workers)
-	for w := range *workers {
-		go func(id int) {
+	for worker := range *workers {
+		go func(worker int) {
 			defer wg.Done()
-			runWorker(ctx, id, s3client, *smallStart, *smallEnd, *cycles)
-		}(w)
+
+			for cycle := 1; *cycles < 0 || cycle <= *cycles; cycle++ {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				switch *mode {
+				case MODE_AI:
+					runAIWorker(ctx, worker, cycle, s3client, *smallStart, *smallEnd, *smallCount, *blockSize)
+				case MODE_BS:
+					readRandomLargeFileBlock(ctx, worker, cycle, s3client, *blockSize)
+				}
+			}
+		}(worker)
 	}
 	wg.Wait()
 }
 
-func runWorker(ctx context.Context, id int, client *s3.Client, smallStart, smallEnd, cycles int) {
-	largeMaxIndex := 50000
-	largeSize := 100 * 1024 * 1024
-	if cycles == 0 {
-		cycles = 9223372036854775807
-		// Set to a very large number to simulate infinite cycles
+func runAIWorker(ctx context.Context, worker, cycle int, client *s3.Client, smallStart, smallEnd, smallCount, blockSizeMiB int) {
+	var wg sync.WaitGroup
+	// Read 1 random small file
+	smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
+	smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
+	readSmallFile(ctx, client, worker, cycle, smallFile)
+
+	// Read smallCount random small files in parallel
+	wg.Add(smallCount)
+	for _ = range smallCount {
+		idx := rand.Intn(smallEnd-smallStart+1) + smallStart
+		smallFile = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
+		go func(smallFile string) {
+			defer wg.Done()
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			readSmallFile(ctx, client, worker, cycle, smallFile)
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			readRandomLargeFileBlock(ctx, worker, cycle, client, blockSizeMiB)
+
+		}(smallFile)
 	}
+	wg.Wait()
 
-	for c := 1; c <= cycles; c++ {
-		select {
-		case <-ctx.Done():
-			log.Printf("[W%d] Context canceled. Exiting worker loop.", id)
-			return
-		default:
-			// Proceed with the current cycle
-		}
+}
 
-		var wg sync.WaitGroup
-		// Read 1 random small file
-		smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
-		smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
-		readSmallFile(ctx, client, id, c, smallFile)
-
-		// Read 1000 random small files in parallel
-		smallFiles := make([]string, 1000)
-		for i := range smallFiles {
-			idx := rand.Intn(smallEnd-smallStart+1) + smallStart
-			smallFiles[i] = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
-		}
-		wg.Add(len(smallFiles))
-		for _, f := range smallFiles {
-			go func(smallFile string) {
-				defer wg.Done()
-				select {
-				case <-ctx.Done():
-					log.Printf("[W%d] Context canceled. Exiting small file read.", id)
-					return
-				default:
-					readSmallFile(ctx, client, id, c, smallFile)
-				}
-
-				fileIdx := rand.Intn(largeMaxIndex) + 1
-				start := rand.Intn(largeSize - 1024*1024)
-				end := start + 1024*1024*10 - 1
-				file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
-				wg.Add(1)
-				go func(f string, s, e int) {
-					defer wg.Done()
-					select {
-					case <-ctx.Done():
-						log.Printf("[W%d] Context canceled. Exiting large range read.", id)
-						return
-					default:
-						readLargeRange(ctx, client, id, c, f, s, e)
-					}
-				}(file, start, end)
-			}(f)
-		}
-		wg.Wait()
-	}
+func readRandomLargeFileBlock(ctx context.Context, worker int, cycle int, client *s3.Client, blockSizeMiB int) {
+	const largeMaxIndex = 50000
+	fileIdx := rand.Intn(largeMaxIndex) + 1
+	const largeSize = 100 * 1024 * 1024
+	start := rand.Intn(largeSize - blockSizeMiB*1024*1024)
+	end := start + 1024*1024*blockSizeMiB
+	file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
+	readLargeRange(ctx, client, worker, cycle, file, start, end)
 }
 
 func smallFilenameWidth(n int) int {
