@@ -26,7 +26,16 @@
       loop:
         - public.crt
         - private.key
-        - private.crt
+
+    - name: Upload CA cert to nodes
+      when: tls == 'on'
+      ansible.builtin.copy:
+        src: "{{ certs_local_dir }}/{{ item }}"
+        dest: "/etc/ssl/certs/minio-{{ item }}"
+        mode: '0666'
+      loop:
+        - ca.crt
+
 
     - name: Remove certs from nodes if TLS is OFF
       when: tls == 'off'
