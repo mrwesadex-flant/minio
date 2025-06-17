@@ -6,30 +6,6 @@
     tls: on  # change to 'off' to disable TLS
     minio_user: minio-user
     certs_local_dir: ~/development/minio/ansible/certs
-    certgen_url: https://github.com/minio/certgen/releases/latest/download/certgen-darwin-arm64
-    certgen_bin: ~/development/minio/ansible/certgen
-
-  # pre_tasks:
-    # - name: Ensure certgen is downloaded on control machine
-    #   delegate_to: localhost
-    #   run_once: true
-    #   ansible.builtin.get_url:
-    #     url: "{{ certgen_url }}"
-    #     dest: "{{ certgen_bin }}"
-    #     mode: '0755'
-
-  #   - name: Generate certs if TLS is ON
-  #     delegate_to: localhost
-  #     run_once: true
-  #     when: tls == 'on'
-  #     ansible.builtin.command:
-  #       cmd: >
-  #         {{ certgen_bin }} -host
-  #         "localhost,storage-san-test-0,storage-san-test-1,storage-san-test-2,storage-san-test-3,storage-san-test-4,
-  #         10.200.0.67,10.200.0.68,10.200.0.69,10.200.0.70,10.200.0.71"
-  #       chdir: "{{ certs_local_dir }}"
-  #     args:
-  #       creates: "{{ certs_local_dir }}/public.crt"
 
   tasks:
     - name: Ensure remote certs dir exists
@@ -50,6 +26,7 @@
       loop:
         - public.crt
         - private.key
+        - private.crt
 
     - name: Remove certs from nodes if TLS is OFF
       when: tls == 'off'
@@ -71,11 +48,11 @@
         regexp: 'https://'
         replace: 'http://'
 
-    # - name: Restart minio service
-    #   ansible.builtin.service:
-    #     name: minio
-    #     state: restarted
-    #     enabled: true
+    - name: Restart minio service
+      ansible.builtin.service:
+        name: minio
+        state: restarted
+        enabled: true
 
     - name: Ensure minio is running
       ansible.builtin.service_facts:
