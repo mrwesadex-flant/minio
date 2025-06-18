@@ -240,17 +240,21 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 		})
 
 		elapsed := time.Since(start)
-		var err1 ratelimit.QuotaExceededError
-		var err2 *retry.MaxAttemptsError
+		var errQuotaExceed ratelimit.QuotaExceededError
+		var errMaxAttempts *retry.MaxAttemptsError
 
-		if errors.As(err, &err1) || errors.As(err, &err2) {
+		if errors.As(err, &errQuotaExceed) || errors.As(err, &errMaxAttempts) {
 			errorLogger.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
 		} else {
-			_ = atomic.AddUint64(&failureCountSmall, 1)
-			errorLogger.Printf("Failed to read small %s: %v", key, err)
+			simultaneous := atomic.AddInt64(&readSmallRunning, -1)
+			failureCountSmall := atomic.AddUint64(&failureCountSmall, 1)
+			errorLogger.Printf("Failed to read small %s: %v, simultaneous %v, failed %v of %v", key, err,
+				simultaneous,
+				failureCountSmall,
+				atomic.LoadUint64(&requestCountSmall))
 			return
 		}
 	}
@@ -266,16 +270,18 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 	speed := float64(readBytes) / elapsed.Seconds() / 1024 / 1024
 	totalSpeed := float64(totalBytesRead) / elapsedScript.Seconds() / 1024 / 1024
 
-	val := atomic.AddInt64(&readSmallRunning, -1)
+	simultaneous := atomic.AddInt64(&readSmallRunning, -1)
 	log.Printf(
 		"[W%d] Cycle %d: small %s in %s (this %.2f MB/s, total %.2f MB/s) simultaneous %v, failed %v of %v",
 		wid,
 		cycle,
 		key,
 		elapsed,
-		speed, totalSpeed,
-		val,
-		atomic.LoadUint64(&failureCountSmall), atomic.LoadUint64(&requestCountSmall),
+		speed,
+		totalSpeed,
+		simultaneous,
+		atomic.LoadUint64(&failureCountSmall),
+		atomic.LoadUint64(&requestCountSmall),
 	)
 }
 
@@ -294,17 +300,27 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 		})
 
 		elapsed := time.Since(start)
-		var err1 ratelimit.QuotaExceededError
-		var err2 *retry.MaxAttemptsError
-		if errors.As(err, &err1) || errors.As(err, &err2) {
+		var errQuotaExceeded ratelimit.QuotaExceededError
+		var errMaxAttempts *retry.MaxAttemptsError
+		if errors.As(err, &errQuotaExceeded) || errors.As(err, &errMaxAttempts) {
 			errorLogger.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
 			break
 		} else {
+			simultaneous := atomic.AddInt64(&readLargeRunning, -1)
 			errorLogger.Printf("Failed to read large %s: %v", key, err)
-			errorLogger.Printf("[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s)", wid, cycle, key, elapsed)
-			_ = atomic.AddUint64(&failureCountLarge, 1)
+			failureCountLarge := atomic.AddUint64(&failureCountLarge, 1)
+			errorLogger.Printf(
+				"[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s) simultaneous %v, failed %v of %v",
+				wid,
+				cycle,
+				key,
+				elapsed,
+				simultaneous,
+				failureCountLarge,
+				atomic.LoadUint64(&requestCountLarge),
+			)
 			return
 		}
 	}
@@ -331,8 +347,10 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 		key,
 		readBytes,
 		elapsed,
-		speed, totalSpeed,
+		speed,
+		totalSpeed,
 		simultaneous,
-		atomic.LoadUint64(&failureCountLarge), atomic.LoadUint64(&requestCountLarge),
+		atomic.LoadUint64(&failureCountLarge),
+		atomic.LoadUint64(&requestCountLarge),
 	)
 }
