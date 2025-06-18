@@ -232,7 +232,6 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 	start := time.Now()
 	var out *s3.GetObjectOutput
 	var err error
-	_ = atomic.AddUint64(&requestCountSmall, 1)
 	for {
 		out, err = client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(S3_BUCKET),
@@ -247,14 +246,16 @@ func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key s
 			errorLogger.Printf("Failed to read small %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
+			_ = atomic.AddUint64(&requestCountSmall, 1)
 			break
 		} else {
+			requestCountSmall := atomic.AddUint64(&requestCountSmall, 1)
 			simultaneous := atomic.AddInt64(&readSmallRunning, -1)
 			failureCountSmall := atomic.AddUint64(&failureCountSmall, 1)
 			errorLogger.Printf("Failed to read small %s: %v, simultaneous %v, failed %v of %v", key, err,
 				simultaneous,
 				failureCountSmall,
-				atomic.LoadUint64(&requestCountSmall))
+				requestCountSmall)
 			return
 		}
 	}
@@ -290,7 +291,6 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", startByte, endByte)
 	var out *s3.GetObjectOutput
 	var err error
-	_ = atomic.AddUint64(&requestCountLarge, 1)
 	start := time.Now()
 	for {
 		out, err = client.GetObject(ctx, &s3.GetObjectInput{
@@ -306,11 +306,14 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 			errorLogger.Printf("Failed to read large %s: %v in %s. Retrying", key, err, elapsed)
 			continue
 		} else if err == nil {
+			_ = atomic.AddUint64(&requestCountLarge, 1)
 			break
 		} else {
+
 			simultaneous := atomic.AddInt64(&readLargeRunning, -1)
 			errorLogger.Printf("Failed to read large %s: %v", key, err)
 			failureCountLarge := atomic.AddUint64(&failureCountLarge, 1)
+			requestCountLarge := atomic.AddUint64(&requestCountLarge, 1)
 			errorLogger.Printf(
 				"[W%d] Cycle %d: range %s (0 bytes) in %s (N/A MB/s) simultaneous %v, failed %v of %v",
 				wid,
@@ -319,7 +322,7 @@ func readLargeRange(ctx context.Context, client *s3.Client, wid, cycle int, key 
 				elapsed,
 				simultaneous,
 				failureCountLarge,
-				atomic.LoadUint64(&requestCountLarge),
+				requestCountLarge,
 			)
 			return
 		}
