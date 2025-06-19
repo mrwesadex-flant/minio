@@ -218,7 +218,7 @@ func readRandomLargeFileBlock(ctx context.Context, worker int, cycle int, client
 	const largeSize = 100 * 1024 * 1024
 	start := rand.Intn(largeSize - blockSizeMiB*1024*1024)
 	end := start + 1024*1024*blockSizeMiB
-	file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
+	file := fmt.Sprintf("large/file_%08d.txt", fileIdx)
 	readLargeRange(ctx, client, worker, cycle, file, start, end)
 }
 
