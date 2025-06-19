@@ -29,7 +29,7 @@ const (
 	bucketName         = "test-bucket"
 	prefix             = "small/"
 	workers            = 100
-	printProgressEvery = 1000 // How often to update the percentage output
+	printProgressEvery = 512 // How often to update the percentage output
 )
 
 func parseSize(sizeStr string) (int64, error) {
@@ -152,7 +152,7 @@ func createLogger(logFilePath string) (*zap.Logger, error) {
 	encoder := zapcore.NewConsoleEncoder(encoderConfig)
 
 	// Create the cores for file and stderr
-	fileCore := zapcore.NewCore(encoder, zapcore.AddSync(logFile), zapcore.InfoLevel)
+	fileCore := zapcore.NewCore(encoder, zapcore.AddSync(logFile), zapcore.DebugLevel)
 	consoleCore := zapcore.NewCore(encoder, zapcore.AddSync(os.Stderr), zapcore.InfoLevel)
 
 	// Combine them with zapcore.NewTee
