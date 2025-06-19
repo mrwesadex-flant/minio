@@ -18,6 +18,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 const (
@@ -125,6 +126,42 @@ func uploadWorker(
 	}
 }
 
+func createLogger(logFilePath string) (*zap.Logger, error) {
+	// Open the log file
+	logFile, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a zapcore.EncoderConfig
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.SecondsDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	}
+
+	// Create an encoder
+	encoder := zapcore.NewConsoleEncoder(encoderConfig)
+
+	// Create the cores for file and stderr
+	fileCore := zapcore.NewCore(encoder, zapcore.AddSync(logFile), zapcore.InfoLevel)
+	consoleCore := zapcore.NewCore(encoder, zapcore.AddSync(os.Stderr), zapcore.InfoLevel)
+
+	// Combine them with zapcore.NewTee
+	combinedCore := zapcore.NewTee(fileCore, consoleCore)
+
+	// Create the logger
+	return zap.New(combinedCore, zap.AddCaller()), nil
+}
+
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Println(`Usage: <program> <start> <end> <size> [--force]
@@ -136,9 +173,11 @@ Example: 0 10000 1K
 		os.Exit(1)
 	}
 
-	log := zap.Must(zap.Config{Level: zap.NewAtomicLevelAt(zap.DebugLevel), OutputPaths: []string{
-		"stderr", filepath.Join(".", "log.log"),
-	}}.Build())
+	log, err := createLogger(filepath.Join(".", "log.log"))
+	if err != nil {
+		fmt.Printf("Failed to create encoder: %v", err)
+		os.Exit(1)
+	}
 
 	start, err := strconv.Atoi(os.Args[1])
 	if err != nil || start < 0 {
