@@ -25,7 +25,7 @@ const (
 	endpoint           = "localhost:9000"
 	accessKeyID        = "minioadmin"
 	secretAccessKey    = "minio-strong-secret"
-	useSSL             = false
+	useSSL             = true
 	bucketName         = "test-bucket"
 	prefix             = "small/"
 	workers            = 100
