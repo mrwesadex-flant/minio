@@ -103,6 +103,13 @@ func uploadWorker(
 		)
 		if err != nil {
 			log.Error("upload error", zap.Error(err))
+
+			select {
+			case <-ctx.Done():
+				log.Debug("ctx is done", zap.Error(ctx.Err()))
+				return
+			default:
+			}
 		} else {
 			// Update and print progress
 			done := atomic.AddInt64(counter, 1)
