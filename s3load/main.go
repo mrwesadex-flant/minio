@@ -65,6 +65,7 @@ func main() {
 	smallCount := flag.Int("small-count", 1000, "Number of small files to read simultaneously")
 	cycles := flag.Int("cycles", -1, "Number of cycles per worker")
 	blockSize := flag.Int("block-size-mb", 10, "Large file download block size")
+	timeoutSeconds := flag.Int("connection-timeout", 0, "Connection timeout in seconds")
 	flag.Parse()
 
 	if *workers <= 0 || *smallStart < 0 || *smallEnd <= 0 || *smallStart >= *smallEnd {
@@ -83,7 +84,8 @@ func main() {
 		
 		Common options:
 		- workers = amount of simultaneously running workers. Must be > 0.
-		- cycles = number of cycles per worker (default 0 - infinite)`, MODES)
+		- cycles = number of cycles per worker (default 0 - infinite)
+		- connection-timeout = Connection timeout in seconds. 0 or not set for disabling timeout`, MODES)
 		os.Exit(1)
 	}
 
@@ -125,7 +127,7 @@ func main() {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(S3_REGION),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(S3_ACCESS_KEY, S3_SECRET_KEY, "")),
-		config.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		config.WithHTTPClient(&http.Client{Timeout: time.Second * time.Duration(*timeoutSeconds)}),
 		config.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 				return aws.Endpoint{
