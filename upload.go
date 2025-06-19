@@ -33,24 +33,24 @@ const (
 
 func parseSize(sizeStr string) (int64, error) {
 	sizeStr = strings.TrimSpace(sizeStr)
-	mult := int64(1)
+	multiplier := int64(1)
 	unit := sizeStr[len(sizeStr)-1]
 	switch unit {
 	case 'K', 'k':
-		mult = 1024
+		multiplier = 1024
 		sizeStr = sizeStr[:len(sizeStr)-1]
 	case 'M', 'm':
-		mult = 1024 * 1024
+		multiplier = 1024 * 1024
 		sizeStr = sizeStr[:len(sizeStr)-1]
 	case 'G', 'g':
-		mult = 1024 * 1024 * 1024
+		multiplier = 1024 * 1024 * 1024
 		sizeStr = sizeStr[:len(sizeStr)-1]
 	}
 	val, err := strconv.ParseInt(sizeStr, 10, 64)
 	if err != nil {
 		return 0, err
 	}
-	return val * mult, nil
+	return val * multiplier, nil
 }
 
 func uploadWorker(
@@ -84,22 +84,15 @@ func uploadWorker(
 		}
 
 		// Check if file exists
-		_, err := minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
-		if err == nil {
-			log.Warn("already exists", zap.String("action", func() string {
-				if force {
-					return "overwriting"
-				} else {
-					return "skipping"
-				}
-			}()))
-
-			if !force {
+		if !force {
+			_, err := minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+			if err == nil {
+				log.Warn("already exists. Skipping")
 				continue
 			}
 		}
 
-		_, err = minioClient.PutObject(
+		_, err := minioClient.PutObject(
 			ctx,
 			bucketName,
 			objectName,
