@@ -179,14 +179,14 @@ func runAIWorker(ctx context.Context, worker, cycle int, client *s3.Client, smal
 	var wg sync.WaitGroup
 	// Read 1 random small file
 	smallIdx := rand.Intn(smallEnd-smallStart+1) + smallStart
-	smallFile := fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(smallIdx), smallIdx)
+	smallFile := fmt.Sprintf("small/file_%08d.txt", smallIdx)
 	readSmallFile(ctx, client, worker, cycle, smallFile)
 
 	// Read smallCount random small files in parallel
 	wg.Add(smallCount)
 	for _ = range smallCount {
 		idx := rand.Intn(smallEnd-smallStart+1) + smallStart
-		smallFile = fmt.Sprintf("small/file_%0*d.txt", smallFilenameWidth(idx), idx)
+		smallFile = fmt.Sprintf("small/file_%08d.txt", idx)
 		go func(smallFile string) {
 			defer wg.Done()
 
@@ -220,13 +220,6 @@ func readRandomLargeFileBlock(ctx context.Context, worker int, cycle int, client
 	end := start + 1024*1024*blockSizeMiB
 	file := fmt.Sprintf("large/largefile_%05d.bin", fileIdx)
 	readLargeRange(ctx, client, worker, cycle, file, start, end)
-}
-
-func smallFilenameWidth(n int) int {
-	if n < 10000000 {
-		return 7
-	}
-	return 8
 }
 
 func readSmallFile(ctx context.Context, client *s3.Client, wid, cycle int, key string) {

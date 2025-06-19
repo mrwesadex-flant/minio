@@ -58,7 +58,6 @@ func uploadWorker(
 	ctx context.Context,
 	minioClient *minio.Client,
 	jobs <-chan int,
-	wg *sync.WaitGroup,
 	contentLength int64,
 	log *zap.Logger,
 	counter *int64,
@@ -66,67 +65,56 @@ func uploadWorker(
 	startTime time.Time,
 	force bool,
 ) {
-	defer wg.Done()
-
-	for job := range jobs {
-
-		objectName := fmt.Sprintf("%sfile_%08d.txt", prefix, job)
-		log := log.With(
-			zap.String("name", objectName),
-			zap.Int("job", job),
-			zap.String("bucket", bucketName),
-		)
-
+	for {
 		select {
 		case <-ctx.Done():
-			log.Debug("ctx is done", zap.Error(ctx.Err()))
+			log.Debug("exiting worker")
 			return
-		default:
-		}
-
-		// Check if file exists
-		if !force {
-			_, err := minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
-			if err == nil {
-				log.Warn("already exists. Skipping")
-				continue
-			}
-		}
-
-		_, err := minioClient.PutObject(
-			ctx,
-			bucketName,
-			objectName,
-			io.LimitReader(rand.Reader, contentLength),
-			contentLength,
-			minio.PutObjectOptions{},
-		)
-		if err != nil {
-			log.Error("upload error", zap.Error(err))
-
-			select {
-			case <-ctx.Done():
-				log.Debug("ctx is done", zap.Error(ctx.Err()))
-				return
-			default:
-			}
-		} else {
-			// Update and print progress
-			done := atomic.AddInt64(counter, 1)
-			elapsed := time.Since(startTime).Seconds()
-			percent := float64(done) / float64(total) * 100
-			log.Debug(
-				"uploaded",
-				zap.Int64("contentLength", contentLength),
-				zap.Float64("percent", percent),
-				zap.Int64("done", done),
-				zap.Int64("total", total),
+		case job := <-jobs:
+			objectName := fmt.Sprintf("%sfile_%08d.txt", prefix, job)
+			log := log.With(
+				zap.String("name", objectName),
+				zap.Int("job", job),
+				zap.String("bucket", bucketName),
 			)
-			if done%printProgressEvery == 0 || done == int64(total) {
-				rate := float64(done) / elapsed
-				remaining := float64(total) - float64(done)
-				eta := time.Duration(remaining/rate) * time.Second
-				log.Sugar().Infof("[PROGRESS] %.2f%% (%d/%d), ETA: %s\n", percent, done, total, eta.Truncate(time.Second))
+
+			// Check if file exists
+			if !force {
+				_, err := minioClient.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{})
+				if err == nil {
+					log.Warn("already exists. Skipping")
+					continue
+				}
+			}
+
+			_, err := minioClient.PutObject(
+				ctx,
+				bucketName,
+				objectName,
+				io.LimitReader(rand.Reader, contentLength),
+				contentLength,
+				minio.PutObjectOptions{},
+			)
+			if err != nil {
+				log.Error("upload error", zap.Error(err))
+			} else {
+				// Update and print progress
+				done := atomic.AddInt64(counter, 1)
+				elapsed := time.Since(startTime).Seconds()
+				percent := float64(done) / float64(total) * 100
+				log.Debug(
+					"uploaded",
+					zap.Int64("contentLength", contentLength),
+					zap.Float64("percent", percent),
+					zap.Int64("done", done),
+					zap.Int64("total", total),
+				)
+				if done%printProgressEvery == 0 || done == int64(total) {
+					rate := float64(done) / elapsed
+					remaining := float64(total) - float64(done)
+					eta := time.Duration(remaining/rate) * time.Second
+					log.Sugar().Infof("[PROGRESS] %.2f%% (%d/%d), ETA: %s\n", percent, done, total, eta.Truncate(time.Second))
+				}
 			}
 		}
 
@@ -253,11 +241,19 @@ Example: 0 10000 1K
 
 	for worker := range workers {
 		wg.Add(1)
-		go uploadWorker(ctx, minioClient, jobs, &wg, sizeBytes, log.With(zap.Int("worker", worker)), &counter, total, startTime, force)
+		go func() {
+			defer wg.Done()
+			uploadWorker(ctx, minioClient, jobs, sizeBytes, log.With(zap.Int("worker", worker)), &counter, total, startTime, force)
+		}()
 	}
 
-	for i := start; i < end; i++ {
-		jobs <- i
+	for job := start; job < end; job++ {
+		select {
+		case <-ctx.Done():
+			log.Debug("canceling job queue")
+		case jobs <- job:
+			log.Debug("Job scheduled", zap.Int("job", job))
+		}
 	}
 	close(jobs)
 
