@@ -108,21 +108,27 @@ func uploadWorker(
 			minio.PutObjectOptions{},
 		)
 		if err != nil {
-			log.Error("uploading", zap.Error(err))
+			log.Error("upload error", zap.Error(err))
 		} else {
-			log.Info("uploaded", zap.Int64("contentLength", contentLength))
+			// Update and print progress
+			done := atomic.AddInt64(counter, 1)
+			elapsed := time.Since(startTime).Seconds()
+			percent := float64(done) / float64(total) * 100
+			log.Debug(
+				"uploaded",
+				zap.Int64("contentLength", contentLength),
+				zap.Float64("percent", percent),
+				zap.Int64("done", done),
+				zap.Int64("total", total),
+			)
+			if done%printProgressEvery == 0 || done == int64(total) {
+				rate := float64(done) / elapsed
+				remaining := float64(total) - float64(done)
+				eta := time.Duration(remaining/rate) * time.Second
+				log.Sugar().Infof("[PROGRESS] %.2f%% (%d/%d), ETA: %s\n", percent, done, total, eta.Truncate(time.Second))
+			}
 		}
 
-		// Update and print progress
-		done := atomic.AddInt64(counter, 1)
-		if done%printProgressEvery == 0 || done == int64(total) {
-			elapsed := time.Since(startTime).Seconds()
-			rate := float64(done) / elapsed
-			remaining := float64(total) - float64(done)
-			eta := time.Duration(remaining/rate) * time.Second
-			percent := float64(done) / float64(total) * 100
-			log.Sugar().Infof("[PROGRESS] %.2f%% (%d/%d), ETA: %s\n", percent, done, total, eta.Truncate(time.Second))
-		}
 	}
 }
 
